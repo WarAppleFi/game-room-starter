@@ -56,8 +56,17 @@ const COLORS = [
   "#f59e0b",
 ];
 
+// Max ticks per second (20 Hz)
+const MAX_TICK_RATE = 20;
+// Minimum time between ticks in milliseconds
+const TICK_INTERVAL_MS = 1000 / MAX_TICK_RATE;
+
 export class Room extends Agent<Env, RoomState> {
   initialState: RoomState = { players: {} };
+
+  // Tick state
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private tickCount = 0;
 
   // A new client opened a WebSocket. Grab their name from the query
   // string and add them to state. The setState broadcast tells every
@@ -89,6 +98,9 @@ export class Room extends Agent<Env, RoomState> {
       if (liveIds.has(id)) cleaned[id] = p;
     }
     this.setState({ players: { ...cleaned, [player.id]: player } });
+
+    // Start tick loop if not already running
+    this.startTicks();
   }
 
   override async onClose(connection: Connection) {
@@ -96,6 +108,11 @@ export class Room extends Agent<Env, RoomState> {
     const next = { ...this.state.players };
     delete next[connection.id];
     this.setState({ players: next });
+
+    // Stop ticks if room is empty
+    if (Object.keys(this.state.players).length === 0) {
+      this.stopTicks();
+    }
   }
 
   // RPC: client calls `agent.stub.move(x, y, fx, fy)`. We use
@@ -131,6 +148,48 @@ export class Room extends Agent<Env, RoomState> {
     this.broadcast(
       JSON.stringify({ type: "chat", id: connection.id, text: t }),
     );
+  }
+
+  // Start the tick loop at 20Hz
+  private startTicks() {
+    if (this.tickTimer) return;
+    this.tickTimer = setInterval(() => {
+      this.tick();
+    }, TICK_INTERVAL_MS);
+  }
+
+  // Stop the tick loop
+  private stopTicks() {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+  }
+
+  // Called every tick (20 times per second max)
+  private tick() {
+    this.tickCount++;
+    // Broadcast tick count as a simple heartbeat or game loop update
+    // Clients can use this for synchronization or animation timing
+    this.broadcast(
+      JSON.stringify({
+        type: "tick",
+        tick: this.tickCount,
+        timestamp: Date.now(),
+        playerCount: Object.keys(this.state.players).length,
+      })
+    );
+
+    // TODO: Add game logic here (AI movement, collisions, etc.)
+    // Example: move NPCs, check for interactions, update state
+
+    // Could also auto-save state periodically, update leaderboards, etc.
+  }
+
+  // Clean up on agent shutdown
+  override async onDestroy() {
+    this.stopTicks();
+    await super.onDestroy();
   }
 }
 
