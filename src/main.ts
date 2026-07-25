@@ -44,6 +44,8 @@ interface RoomState {
 
 const SPEED = 4; // tiles per second
 const SEND_INTERVAL_MS = 50; // ~20 Hz position sync
+const TICK_RATE = 20; // static ticks per second
+const TICK_INTERVAL_MS = 1000 / TICK_RATE; // 50ms
 const HALF_MAP = MAP_SIZE / 2 - 0.5;
 const ARRIVAL_RADIUS = 0.15;
 // Exponential smoothing rate for remote players' positions. Higher =
@@ -76,6 +78,10 @@ let lastSentX = 0;
 let lastSentY = 0;
 let lastSentFacingX = 0;
 let lastSentFacingY = 1;
+
+// Fixed timestep state
+let accumulator = 0;
+let lastTickTime = 0;
 
 // Type-only import for the typed RPC stub. `import type` ensures the
 // server module never lands in the client bundle.
@@ -209,77 +215,105 @@ newRoomBtn.addEventListener("click", () => {
   location.href = `/r/${code}`;
 });
 
-// -- Render loop --
+// -- Physics update with fixed timestep --
 
-let last = performance.now();
-function frame(now: number) {
-  const dt = (now - last) / 1000;
-  last = now;
-  dungeon.update(now / 1000);
-
-  if (myId) {
-    const me = localPlayers.get(myId);
-    if (me) {
-      // Decide direction: keyboard wins over pointer.
-      let dx = 0;
-      let dy = 0;
-      const keyMag = Math.hypot(input.state.dx, input.state.dy);
-      if (keyMag > 0) {
-        dx = input.state.dx / keyMag;
-        dy = input.state.dy / keyMag;
-      } else if (input.pointerScreen) {
-        const t = screenToWorld(
-          input.pointerScreen.x,
-          input.pointerScreen.y,
-          camera,
-          canvasContainer,
-        );
-        if (t) {
-          const tx = t.x - me.x;
-          const ty = t.y - me.y;
-          const dist = Math.hypot(tx, ty);
-          if (dist >= ARRIVAL_RADIUS) {
-            dx = tx / dist;
-            dy = ty / dist;
-          }
-        }
-      }
-
-      if (dx !== 0 || dy !== 0) {
-        // Two-axis sliding: try each axis independently and only
-        // commit the move if it doesn't land us inside a collider.
-        // If both succeed → diagonal walk. If one is blocked → the
-        // player slides along the wall instead of stopping dead.
-        // Preventive (not reactive) — we never let the player enter
-        // the collider in the first place.
-        const stepX = clamp(me.x + dx * SPEED * dt, -HALF_MAP, HALF_MAP);
-        if (!colliders.isBlocked(stepX, me.y, PLAYER_RADIUS)) me.x = stepX;
-        const stepY = clamp(me.y + dy * SPEED * dt, -HALF_MAP, HALF_MAP);
-        if (!colliders.isBlocked(me.x, stepY, PLAYER_RADIUS)) me.y = stepY;
-        me.facingX = dx;
-        me.facingY = dy;
-      }
-
-      // Throttle outbound updates — skip if nothing changed since last send.
-      const moved =
-        Math.abs(me.x - lastSentX) > 0.001 ||
-        Math.abs(me.y - lastSentY) > 0.001 ||
-        Math.abs(me.facingX - lastSentFacingX) > 0.01 ||
-        Math.abs(me.facingY - lastSentFacingY) > 0.01;
-      if (
-        moved &&
-        now - lastSentAt > SEND_INTERVAL_MS &&
-        agent?.readyState === WebSocket.OPEN
-      ) {
-        agent.stub.move(me.x, me.y, me.facingX, me.facingY);
-        lastSentAt = now;
-        lastSentX = me.x;
-        lastSentY = me.y;
-        lastSentFacingX = me.facingX;
-        lastSentFacingY = me.facingY;
+function updatePlayerMovement(me: Player, dt: number) {
+  // Decide direction: keyboard wins over pointer.
+  let dx = 0;
+  let dy = 0;
+  const keyMag = Math.hypot(input.state.dx, input.state.dy);
+  if (keyMag > 0) {
+    dx = input.state.dx / keyMag;
+    dy = input.state.dy / keyMag;
+  } else if (input.pointerScreen) {
+    const t = screenToWorld(
+      input.pointerScreen.x,
+      input.pointerScreen.y,
+      camera,
+      canvasContainer,
+    );
+    if (t) {
+      const tx = t.x - me.x;
+      const ty = t.y - me.y;
+      const dist = Math.hypot(tx, ty);
+      if (dist >= ARRIVAL_RADIUS) {
+        dx = tx / dist;
+        dy = ty / dist;
       }
     }
   }
+
+  if (dx !== 0 || dy !== 0) {
+    // Two-axis sliding: try each axis independently and only
+    // commit the move if it doesn't land us inside a collider.
+    // If both succeed → diagonal walk. If one is blocked → the
+    // player slides along the wall instead of stopping dead.
+    // Preventive (not reactive) — we never let the player enter
+    // the collider in the first place.
+    const stepX = clamp(me.x + dx * SPEED * dt, -HALF_MAP, HALF_MAP);
+    if (!colliders.isBlocked(stepX, me.y, PLAYER_RADIUS)) me.x = stepX;
+    const stepY = clamp(me.y + dy * SPEED * dt, -HALF_MAP, HALF_MAP);
+    if (!colliders.isBlocked(me.x, stepY, PLAYER_RADIUS)) me.y = stepY;
+    me.facingX = dx;
+    me.facingY = dy;
+  }
+}
+
+function sendPositionUpdate(me: Player, now: number) {
+  // Throttle outbound updates — skip if nothing changed since last send.
+  const moved =
+    Math.abs(me.x - lastSentX) > 0.001 ||
+    Math.abs(me.y - lastSentY) > 0.001 ||
+    Math.abs(me.facingX - lastSentFacingX) > 0.01 ||
+    Math.abs(me.facingY - lastSentFacingY) > 0.01;
+  if (
+    moved &&
+    now - lastSentAt > SEND_INTERVAL_MS &&
+    agent?.readyState === WebSocket.OPEN
+  ) {
+    agent.stub.move(me.x, me.y, me.facingX, me.facingY);
+    lastSentAt = now;
+    lastSentX = me.x;
+    lastSentY = me.y;
+    lastSentFacingX = me.facingX;
+    lastSentFacingY = me.facingY;
+  }
+}
+
+function runFixedUpdate(dt: number) {
+  if (!myId) return;
+  const me = localPlayers.get(myId);
+  if (!me) return;
+  updatePlayerMovement(me, dt);
+}
+
+// -- Render loop with fixed timestep --
+
+let last = performance.now();
+function frame(now: number) {
+  // Calculate time delta for fixed timestep
+  const delta = (now - last) / 1000;
+  last = now;
+
+  // Accumulate time for fixed updates
+  accumulator += delta;
+
+  // Run fixed updates at TICK_RATE
+  while (accumulator >= TICK_INTERVAL_MS / 1000) {
+    runFixedUpdate(TICK_INTERVAL_MS / 1000);
+    accumulator -= TICK_INTERVAL_MS / 1000;
+  }
+
+  // Send position updates (still throttled independently)
+  if (myId) {
+    const me = localPlayers.get(myId);
+    if (me) {
+      sendPositionUpdate(me, now);
+    }
+  }
+
+  // Update dungeon animation
+  dungeon.update(now / 1000);
 
   // Camera follows the local player.
   if (myId) {
@@ -294,7 +328,7 @@ function frame(now: number) {
   // Exponential smoothing factor — `LERP_RATE` ~= "1 / time constant",
   // so 12 means we close ~70% of the gap to target every ~100ms.
   // Frame-rate-independent because it scales with dt.
-  const lerp = 1 - Math.exp(-dt * LERP_RATE);
+  const lerp = 1 - Math.exp(-delta * LERP_RATE);
   for (const p of localPlayers.values()) {
     // Remote players: ease the rendered position + facing toward the
     // latest network target. Local player is already authoritative
@@ -346,4 +380,4 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 }
 function clamp(v: number, lo: number, hi: number) {
   return v < lo ? lo : v > hi ? hi : v;
-}
+        }
