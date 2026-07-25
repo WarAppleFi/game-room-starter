@@ -380,4 +380,4 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 }
 function clamp(v: number, lo: number, hi: number) {
   return v < lo ? lo : v > hi ? hi : v;
-        }
+    }
