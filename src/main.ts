@@ -47,12 +47,15 @@ const SEND_INTERVAL_MS = 50; // ~20 Hz position sync
 const TICK_RATE = 20; // static ticks per second
 const TICK_INTERVAL_MS = 1000 / TICK_RATE; // 50ms
 const HALF_MAP = MAP_SIZE / 2 - 0.5;
-const ARRIVAL_RADIUS = 0.15;
 // Exponential smoothing rate for remote players' positions. Higher =
 // catches up faster (tighter to source-of-truth but more jitter on
 // dropped packets). 12 ≈ ~80ms time constant, smooth and responsive.
 const LERP_RATE = 12;
-const CAM_OFFSET = { x: 15, y: 15, z: 15 };
+const EYE_HEIGHT = 1.6;
+const LOOK_SENSITIVITY = 0.0022;
+const MAX_PITCH = Math.PI / 2.2;
+let cameraYaw = 0;
+let cameraPitch = 0;
 
 const canvasContainer = $("canvas-container");
 const overlaysContainer = $("overlays");
@@ -97,6 +100,12 @@ function getRoomCode(): string {
 
 function spawn(p: NetPlayer) {
   const player = createPlayer(scene, p);
+  if (player.id === myId) {
+    player.body.visible = false;
+    player.indicator.visible = false;
+    player.torchFlame.visible = false;
+    player.torchLight.visible = false;
+  }
   localPlayers.set(player.id, player);
   createOverlay(overlaysContainer, player.id, player.name, player.color);
 }
@@ -218,44 +227,26 @@ newRoomBtn.addEventListener("click", () => {
 // -- Physics update with fixed timestep --
 
 function updatePlayerMovement(me: Player, dt: number) {
-  // Decide direction: keyboard wins over pointer.
-  let dx = 0;
-  let dy = 0;
-  const keyMag = Math.hypot(input.state.dx, input.state.dy);
-  if (keyMag > 0) {
-    dx = input.state.dx / keyMag;
-    dy = input.state.dy / keyMag;
-  } else if (input.pointerScreen) {
-    const t = screenToWorld(
-      input.pointerScreen.x,
-      input.pointerScreen.y,
-      camera,
-      canvasContainer,
-    );
-    if (t) {
-      const tx = t.x - me.x;
-      const ty = t.y - me.y;
-      const dist = Math.hypot(tx, ty);
-      if (dist >= ARRIVAL_RADIUS) {
-        dx = tx / dist;
-        dy = ty / dist;
-      }
-    }
-  }
+  const dx = input.state.dx;
+  const dy = input.state.dy;
+  const moveMag = Math.hypot(dx, dy);
 
-  if (dx !== 0 || dy !== 0) {
-    // Two-axis sliding: try each axis independently and only
-    // commit the move if it doesn't land us inside a collider.
-    // If both succeed → diagonal walk. If one is blocked → the
-    // player slides along the wall instead of stopping dead.
-    // Preventive (not reactive) — we never let the player enter
-    // the collider in the first place.
-    const stepX = clamp(me.x + dx * SPEED * dt, -HALF_MAP, HALF_MAP);
+  if (moveMag > 0) {
+    const forwardX = Math.sin(cameraYaw);
+    const forwardZ = Math.cos(cameraYaw);
+    const rightX = Math.cos(cameraYaw);
+    const rightZ = -Math.sin(cameraYaw);
+
+    const moveX = (rightX * dx + forwardX * dy) / moveMag;
+    const moveY = (rightZ * dx + forwardZ * dy) / moveMag;
+
+    const stepX = clamp(me.x + moveX * SPEED * dt, -HALF_MAP, HALF_MAP);
     if (!colliders.isBlocked(stepX, me.y, PLAYER_RADIUS)) me.x = stepX;
-    const stepY = clamp(me.y + dy * SPEED * dt, -HALF_MAP, HALF_MAP);
+    const stepY = clamp(me.y + moveY * SPEED * dt, -HALF_MAP, HALF_MAP);
     if (!colliders.isBlocked(me.x, stepY, PLAYER_RADIUS)) me.y = stepY;
-    me.facingX = dx;
-    me.facingY = dy;
+
+    me.facingX = moveX;
+    me.facingY = moveY;
   }
 }
 
@@ -295,6 +286,13 @@ function frame(now: number) {
   const delta = (now - last) / 1000;
   last = now;
 
+  const lookX = input.state.lookX * LOOK_SENSITIVITY;
+  const lookY = input.state.lookY * LOOK_SENSITIVITY;
+  input.state.lookX = 0;
+  input.state.lookY = 0;
+  cameraYaw += lookX;
+  cameraPitch = clamp(cameraPitch - lookY, -MAX_PITCH, MAX_PITCH);
+
   // Accumulate time for fixed updates
   accumulator += delta;
 
@@ -315,12 +313,13 @@ function frame(now: number) {
   // Update dungeon animation
   dungeon.update(now / 1000);
 
-  // Camera follows the local player.
+  // Camera follows the local player in first-person view.
   if (myId) {
     const me = localPlayers.get(myId);
     if (me) {
-      camera.position.set(me.x + CAM_OFFSET.x, CAM_OFFSET.y, me.y + CAM_OFFSET.z);
-      camera.lookAt(me.x, 0, me.y);
+      camera.position.set(me.x, EYE_HEIGHT, me.y);
+      camera.rotation.order = "YXZ";
+      camera.rotation.set(-cameraPitch, cameraYaw, 0);
     }
   }
 

@@ -49,17 +49,9 @@ export function createScene(container: HTMLElement) {
   scene.background = new THREE.Color(0x1a1a2e);
 
   const aspect = container.clientWidth / container.clientHeight;
-  const d = 10;
-  const camera = new THREE.OrthographicCamera(
-    -d * aspect,
-    d * aspect,
-    d,
-    -d,
-    0.1,
-    100,
-  );
-  camera.position.set(15, 15, 15);
-  camera.lookAt(0, 0, 0);
+  const camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 100);
+  camera.position.set(0, 1.6, 0);
+  camera.rotation.order = "YXZ";
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
@@ -106,8 +98,7 @@ export function createScene(container: HTMLElement) {
 
   window.addEventListener("resize", () => {
     const a = container.clientWidth / container.clientHeight;
-    camera.left = -d * a;
-    camera.right = d * a;
+    camera.aspect = a;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
   });

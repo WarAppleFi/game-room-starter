@@ -1,67 +1,47 @@
 // Movement input.
 //
-//   - Keyboard (WASD / arrows): emits a normalized direction vector
-//     in `state`, rotated -45° so keys feel aligned with the iso view.
-//   - Pointer (mouse / touch / pen): walk-toward-cursor while held.
-//     We only track the cursor's *screen* position here — the render
-//     loop re-projects it to world coords each frame. Because the
-//     camera follows the player, a stationary cursor produces a
-//     constant world-space direction, so the sphere keeps walking
-//     until you release. Move the cursor to steer; release to stop.
-//
-// Keyboard takes priority over the pointer in the render loop.
+//   - Keyboard (WASD / arrows): emits a movement vector in the
+//     player's local forward/strafe axes.
+//   - Mouse: controls the camera yaw/pitch while the pointer is locked
+//     over the canvas, which gives the scene a first-person feel.
 
 export interface InputState {
   dx: number;
   dy: number;
-}
-
-const ISO_ROTATION = -Math.PI / 4;
-
-function rotateForIso(x: number, y: number) {
-  return {
-    dx: x * Math.cos(ISO_ROTATION) - y * Math.sin(ISO_ROTATION),
-    dy: x * Math.sin(ISO_ROTATION) + y * Math.cos(ISO_ROTATION),
-  };
+  lookX: number;
+  lookY: number;
 }
 
 export function createInput(canvas: HTMLElement) {
   const ret = {
-    state: { dx: 0, dy: 0 } as InputState,
-    // Live cursor position in CSS pixels while a pointer is held.
-    // The render loop re-casts this to world coords each frame so the
-    // walk direction stays correct as the camera follows the player.
+    state: { dx: 0, dy: 0, lookX: 0, lookY: 0 } as InputState,
     pointerScreen: null as { x: number; y: number } | null,
     setEnabled(b: boolean) { enabled = b; if (!b) reset(); },
   };
 
   const keys = new Set<string>();
   let enabled = true;
-  let pointerId: number | null = null;
+  let pointerLocked = false;
 
   function reset() {
     keys.clear();
     ret.state.dx = 0;
     ret.state.dy = 0;
+    ret.state.lookX = 0;
+    ret.state.lookY = 0;
     ret.pointerScreen = null;
-    pointerId = null;
+    pointerLocked = false;
   }
 
   function recomputeKeyboard() {
     let x = 0;
     let y = 0;
-    if (keys.has("KeyW") || keys.has("ArrowUp")) y -= 1;
-    if (keys.has("KeyS") || keys.has("ArrowDown")) y += 1;
+    if (keys.has("KeyW") || keys.has("ArrowUp")) y += 1;
+    if (keys.has("KeyS") || keys.has("ArrowDown")) y -= 1;
     if (keys.has("KeyA") || keys.has("ArrowLeft")) x -= 1;
     if (keys.has("KeyD") || keys.has("ArrowRight")) x += 1;
-    if (x === 0 && y === 0) {
-      ret.state.dx = 0;
-      ret.state.dy = 0;
-      return;
-    }
-    const { dx, dy } = rotateForIso(x, y);
-    ret.state.dx = dx;
-    ret.state.dy = dy;
+    ret.state.dx = x;
+    ret.state.dy = y;
   }
 
   window.addEventListener("keydown", (e) => {
@@ -75,23 +55,20 @@ export function createInput(canvas: HTMLElement) {
     recomputeKeyboard();
   });
 
-  canvas.addEventListener("pointerdown", (e) => {
+  canvas.addEventListener("click", () => {
     if (!enabled) return;
-    pointerId = e.pointerId;
-    canvas.setPointerCapture(e.pointerId);
-    ret.pointerScreen = { x: e.clientX, y: e.clientY };
+    canvas.requestPointerLock();
   });
-  canvas.addEventListener("pointermove", (e) => {
-    if (!enabled || e.pointerId !== pointerId) return;
-    ret.pointerScreen = { x: e.clientX, y: e.clientY };
+
+  document.addEventListener("pointerlockchange", () => {
+    pointerLocked = document.pointerLockElement === canvas;
   });
-  function endPointer(e: PointerEvent) {
-    if (e.pointerId !== pointerId) return;
-    pointerId = null;
-    ret.pointerScreen = null;
-  }
-  canvas.addEventListener("pointerup", endPointer);
-  canvas.addEventListener("pointercancel", endPointer);
+
+  document.addEventListener("mousemove", (e) => {
+    if (!enabled || !pointerLocked) return;
+    ret.state.lookX += e.movementX;
+    ret.state.lookY += e.movementY;
+  });
 
   return ret;
 }
